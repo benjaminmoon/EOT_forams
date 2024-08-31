@@ -1,0 +1,1249 @@
+---
+title: "Data and code from 'Surviving cliate change: morphological trends in reticulate _Nummulites_ cross the Eocene-Oligocene transition'"
+authors: Ravi Kiran Koorapati, Benjamin C. Moon, Laura Cotton 
+---
+
+This code forms part of the supplementary material to:
+
+KIRAN KOORAPATI, R., MOON, B. C. and COTTON, L. 2024. Surviving cliate change: morphological trends in reticulate _Nummulites_ cross the Eocene-Oligocene transition. _Palaeontology_
+
+This data is available from Zenodo at DOI: XXX and should be cited as:
+
+
+KIRAN KOORAPATI, R., MOON, B. C. and COTTON, L. 2024. Data from 'Surviving cliate change: morphological trends in reticulate _Nummulites_ cross the Eocene-Oligocene transition'. Zenodo1, doi: XXX
+
+# Make code replicable
+
+This little bit here uses `renv`, a package that organises your packages and
+makes sure that the correct version is installed based on what you use to write
+the code. It's useful for the various times when packages are updated and things
+either work differently or not at all.
+
+We ran these analyses using R version 4.2.1 and the packages and version saved by
+`renv`. You may need to update.
+
+`renv` stores the package versions in a *lockfile* that is automatically loaded
+when you start R in this folder. If it doesn't load, or you need to update then
+use the following command to initialize.
+
+```{r eval = FALSE}
+renv::init()
+```
+
+
+# Load data
+
+These files are the primary data. Most code is taken from the `tidyverse` style.
+`ggplot2` is one of the most often-used tidyverse packages. We filter out the
+Tethys samples.
+
+```{r load_data}
+library(tidyverse)
+library(cxhull)
+library(ggrepel)
+library(nlme)
+library(patchwork)
+library(vegan)
+library(viridis)
+library(ggConvexHull) # avaiable on GitHub "cmartin/ggConvexHull"
+library(ggpubr)
+
+thin_section_data <-
+  read_csv("./data/Data2D.csv") |>
+  filter(Series != "Tethys") |>
+  arrange(desc(Age_New))
+
+segmented_data <-
+  read_csv("./data/Data3D.csv") |>
+  filter(!is.na(Series)) |>
+  arrange(desc(Age))
+
+isotope_data <-
+  read_csv("./data/Isotopes_Modified.csv") |>
+  arrange(desc(Age_New))
+```
+
+We create a couple of folders for outputs.
+
+```{r create_folders}
+if (!dir.exists("output")) dir.create("output")
+if (!dir.exists("fig")) dir.create("fig")
+```
+
+
+# Plotting variation with boxplots
+
+This code plots box plots showing the variation in values from the data. This
+code chunk does it for all of the main data (chamber sizes, areas, radii)
+creating a separate PDF for each measurement set (defined from prefixes in the
+data table).
+
+```{r boxplot_all_data}
+column_pattern <- "^([PDRTNW]|C[ALWR])[1-5](_Avg)?$|^Radius|^WT"
+column_pattern_3D <- "^WT|DT|^VP|^CD|^V[1-5]|^NV[1-5]"
+
+long_data <-
+  thin_section_data |>
+  pivot_longer(
+    cols = matches(column_pattern),
+    names_to = "variable",
+    values_to = "values"
+  )
+
+long_data_3D <-
+  segmented_data |>
+  mutate(
+    DT = Diameter / Thickness,
+    across(matches("^N?V"), ~ .x / 1e6)
+  ) |>
+  pivot_longer(
+    cols = matches(column_pattern_3D),
+    names_to = "variable",
+    values_to = "values"
+  )
+```
+
+This small chunk orders the series so that the Eocene data comes first.
+
+```{r order_series}
+series_order <-
+  c(
+    "Eocene"    = "Eocene",
+    "EOT"       = "EOT",
+    "Oligocene" = "Oligocene"
+  )
+```
+
+Next we create a list to go through the measurement prefixes and link them to
+their measurements to make the plots coherent.
+
+```{r measurement_labels}
+measurement_prefixes <-
+  list(
+    proloculus         = c("P", "Proloculus length (µm)"),
+    deuteroconch       = c("D", "Deuteroconch length (µm)"),
+    whorl_radius       = c("R", "Whorl radius (µm)"),
+    wall_thickness     = c("T", "Wall thickness (µm)"),
+    whorl_chambers     = c("N", "No. chambers in whorl"),
+    calcite_area       = c("CA", "Calcite area (µm²)"),
+    avg_chamber_length = c("CL", "Average chamber length by whorl (µm)"),
+    avg_chamber_width  = c("CW", "Average chamber width by whorl (µm)"),
+    avg_chamber_ratios = c("CR", "Average chamber ratios"),
+    whorl_number       = c("WT", "Number of whorls"),
+    test_radius        = c("Radius", "Foram test radius (µm)")
+  )
+
+measurement_prefixes_3D <-
+  list(
+    VolProloculus      = c("VP", "Volume of the Proloculus (µm³)"),
+    Vol_whorl_1        = c("V1W", "Volume of whorl (µm³)"),
+    whorl_number3D     = c("WT3D", "Number of whorls"),
+    diameter           = c("Diameter", "Diameter of the test (µm)"),
+    thickness          = c("Thickness", "Thickness of the test (µm)"),
+    calcite_volume     = c("CD", "Amount of calcite (µm³)")
+  )
+
+append_pattern <- "[[:digit:]]?W?(_Avg)?$"
+```
+
+Doing the above is useful because we can then just go through each item in that
+list, subset to those measurements, then plot that data into a single file,
+getting a series of PDFs each with their own data and properly labelled axes.
+
+```{r boxplot_function}
+give.n <- function(x) {
+  # https://stackoverflow.com/a/3483657
+  data.frame(
+    y = -Inf, # for the full range
+    label = paste0("n=", length(x))
+  )
+}
+
+measurement_boxplots <-
+  function(prefix, measurement_data = long_data, save_plot = TRUE) {
+    measurement_cols <-
+      paste0("^(", prefix[[1]], append_pattern, ")")
+    measurement_plot <-
+      measurement_data |>
+      filter(
+        str_detect(variable, "P3", negate = TRUE),
+        str_detect(variable, measurement_cols)
+      ) |>
+      mutate(
+        Series = factor(Series, labels = names(series_order)),
+        variable = case_when(
+          str_detect(variable, "WT") ~ "",
+          str_detect(variable, "P") ~ variable,
+          str_detect(variable, "[CNR]") ~
+            str_replace(variable, "[CNR]+([[:digit:]]).?", "Whorl \\1")
+        )
+      ) |>
+      ggplot(
+        aes(y = values, x = factor(Series))
+      ) +
+      geom_boxplot(na.rm = TRUE) +
+      stat_summary(
+        fun.data = give.n, geom = "text",
+        size = 2.5, hjust = -0.2, vjust = 1.5
+      ) +
+      stat_compare_means(
+        method = "t.test",
+        comparisons = list(
+          c("Oligocene", "EOT"), c("EOT", "Eocene"),
+          c("Oligocene", "Eocene")
+        ),
+        label.x.npc = "left", label.y.npc = "centre",
+        symnum.args = list(
+          cutpoints = c(0, 0.001, 0.01, 0.05, Inf),
+          symbols = c("***", "**", "*", "ns")
+        ),
+        na.rm = TRUE, size = 2.5
+      ) +
+      facet_wrap(vars(variable), nrow = 1) +
+      theme_minimal() +
+      coord_flip() +
+      scale_x_discrete(expand = expansion(mult = c(0.3, 0.3))) +
+      scale_y_continuous(
+        n.breaks = 4, expand = expansion(mult = c(0.04, 0.2))
+      ) +
+      ylab(prefix[[2]]) +
+      xlab(NULL) +
+      expand_limits(y = 0) +
+      theme(
+        legend.position = "none",
+        panel.border = element_rect(fill = NA, colour = "black")
+      )
+    if (save_plot == TRUE) {
+      ggsave(
+        measurement_plot,
+        file = paste0("./fig/fig_length_boxplot_", prefix[[1]], ".pdf"),
+        width = 9, height = 4
+      )
+    } else {
+      measurement_plot
+    }
+  }
+
+measurement_boxplots_3D <-
+  function(prefix, measurement_data = long_data_3D, save_plot = TRUE) {
+    measurement_cols <-
+      paste0("^(", prefix[[1]], append_pattern, ")")
+    measurement_plot <-
+      measurement_data |>
+      filter(str_detect(variable, measurement_cols)) |>
+      mutate(
+        Series = factor(Series, labels = names(series_order)),
+        variable = case_when(
+          str_detect(variable, "^NV") ~
+            str_replace(variable, "^NV([[:digit:]])W", "Whorl \\1"),
+          str_detect(variable, "VP") ~ "  ",
+          str_detect(variable, "^V") ~
+            str_replace(variable, "^V([[:digit:]])W", "Whorl \\1"),
+          str_detect(variable, "DT") ~ " "
+        )
+      ) |>
+      ggplot(
+        aes(y = values, x = factor(Series))
+      ) +
+      geom_boxplot(na.rm = TRUE) +
+      stat_summary(
+        fun.data = give.n, geom = "text",
+        size = 2.5, hjust = -0.2, vjust = 1.5
+      ) +
+      stat_compare_means(
+        method = "t.test",
+        comparisons = list(
+          c("Oligocene", "EOT"), c("EOT", "Eocene"),
+          c("Oligocene", "Eocene")
+        ),
+        label.x.npc = "left", label.y.npc = "centre",
+        symnum.args = list(
+          cutpoints = c(0, 0.001, 0.01, 0.05, Inf),
+          symbols = c("***", "**", "*", "ns")
+        ),
+        na.rm = TRUE, size = 2.5
+      ) +
+      facet_wrap(vars(variable), nrow = 1, scale = "free_x") +
+      theme_minimal() +
+      coord_flip() +
+      scale_x_discrete(expand = expansion(mult = 0.3)) +
+      scale_y_continuous(
+        n.breaks = 4,
+        expand = expansion(mult = c(0.04, 0.2))
+      ) +
+      ylab(prefix[[2]]) +
+      xlab(NULL) +
+      expand_limits(y = 0) +
+      scale_color_viridis(
+        end = 0.9,
+        name = "Chamber",
+        discrete = TRUE
+      ) +
+      theme(
+        legend.position = "none",
+        panel.background = element_rect(fill = NA, colour = "black")
+      )
+    if (save_plot == TRUE) {
+      ggsave(
+        measurement_plot,
+        file = paste0("./fig/fig_length_boxplot_3D_", prefix[[1]], ".pdf"),
+        width = 9, height = 4
+      )
+    } else {
+      measurement_plot
+    }
+  }
+```
+
+The above only creates the function, below runs it. We use `walk` as this goes
+through each list item and runs the function but doesn't change the list: it
+only gets the effect rather than changing the inputs – very useful for plotting.
+
+```{r boxplot_plot}
+measurement_prefixes |>
+  walk(measurement_boxplots)
+
+measurement_prefixes_3D |>
+  walk(measurement_boxplots_3D)
+```
+
+## Plot for main text ##
+
+This code plots a subset of the data into a single-page figure.
+
+```{r main_boxplot}
+main_plot_measurement_prefixes <-
+  list(
+    whorl_chambers     = c("N", "No. chambers in whorl"),
+    whorl_radius       = c("R", "Whorl radius (µm)"),
+    avg_chamber_ratios = c("CR", "Average chamber ratios"),
+    whorl_number       = c("WT", "Number of whorls"),
+    proloculus         = c("P", "Proloculus length (µm)")
+  )
+
+fig_boxplots <-
+  main_plot_measurement_prefixes |>
+  map(measurement_boxplots, save_plot = FALSE)
+
+layout <- "
+ABB
+CCC
+DDD
+EEE
+"
+
+fig_boxplots[[4]] +
+  fig_boxplots[[5]] +
+  fig_boxplots[[2]] +
+  fig_boxplots[[1]] +
+  fig_boxplots[[3]] +
+  plot_layout(design = layout) +
+  plot_annotation(tag_levels = "A") &
+  theme(
+    strip.text = element_text(size = 8),
+    axis.title = element_text(size = 9)
+  )
+
+ggsave(
+  file = paste0("./fig/fig_main_length_boxplots.pdf"),
+  width = 165, height = 210, units = "mm"
+)
+
+
+main_plot_3D_measure_prefixes <-
+  list(
+    VolProloculus = c(
+      "VP",
+      expression(paste("Volume of the Proloculus (×", 10^6, "µm³)"))
+    ),
+    VolChamber = c(
+      "NV",
+      expression(paste("Average chamber volume (×", 10^6, "µm³)"))
+    ),
+    DT_ratio = c("DT", "Diameter/thickness ratio"),
+    VolWhorl = c("V", expression(paste("Whorl volume (×", 10^6, "µm³)")))
+  )
+
+fig_boxplots_3D <-
+  main_plot_3D_measure_prefixes |>
+  map(measurement_boxplots_3D, save_plot = FALSE)
+
+layout <- "
+AB
+CC
+DD
+"
+
+fig_boxplots_3D[[1]] +
+  fig_boxplots_3D[[3]] +
+  fig_boxplots_3D[[4]] +
+  fig_boxplots_3D[[2]] +
+  plot_layout(design = layout) +
+  plot_annotation(tag_levels = "A") &
+  theme(
+    strip.text = element_text(size = 8),
+    axis.title = element_text(size = 9)
+  )
+
+ggsave(
+  file = paste0("./fig/fig_main_length_boxplots_3D.pdf"),
+  width = 165, height = 180, units = "mm"
+)
+```
+
+## T-tests
+
+We use *t*-tests to test for differences between group means.
+
+```{r}
+t_test_df <-
+  compare_means(
+    values ~ Series,
+    data = filter(
+      long_data,
+      variable %in%
+        c("WT", "P1", "P2", paste0("R", 1:4), paste0("N", 1:4),
+          paste0("CR", 1:4))
+    ),
+    method = "t.test",
+    group.by = "variable",
+    symnum.args = list(
+      cutpoints = c(0, 0.001, 0.01, 0.05, Inf),
+      symbols = c("***", "**", "*", "ns")
+    )
+  )
+write_csv(t_test_df, file = "./output/t_test_2D.csv")
+
+t_test_df_3D <-
+  compare_means(
+    values ~ Series,
+    data = filter(
+      long_data_3D,
+      variable %in%
+        c("VP", "DT", paste0("V", 1:3, "W"), paste0("NV", 1:3, "W"))
+    ),
+    method = "t.test",
+    group.by = "variable",
+    symnum.args = list(
+      cutpoints = c(0, 0.001, 0.01, 0.05, Inf),
+      symbols = c("***", "**", "*", "ns")
+    )
+  )
+write_csv(t_test_df_3D, file = "./output/t_test_3D.csv")
+```
+
+
+# Trends through time
+
+We plot the trends in the measurements through time, like above doing this for
+all measurements, then having a few special ones separated below.
+
+Like for the above figures, this function tells R to plot while going through a
+list of settings.
+
+```{r time_trends_function}
+time_plot_function <-
+  function(prefix, data = long_data, save_plot = TRUE) {
+    measurement_cols <-
+      paste0("^(", prefix[[1]], append_pattern, ")")
+    time_plot <-
+      data |>
+      filter(str_detect(variable, measurement_cols)) |>
+      mutate(
+        Series = factor(Series, labels = names(series_order))
+      ) |>
+      ggplot(aes(x = depth, y = values, colour = variable)) +
+      geom_point() +
+      geom_smooth() +
+      scale_x_reverse() +
+      expand_limits(y = 0) +
+      coord_flip() +
+      theme_minimal() +
+      facet_wrap(vars(variable), nrow = 1, strip.position = "top") +
+      scale_color_viridis(end = 0.9, discrete = TRUE) +
+      theme(legend.position = "none") +
+      xlab("Depth (m)") +
+      ylab(prefix[[2]])
+    if (save_plot == TRUE) {
+      ggsave(
+        time_plot,
+        file = paste0("./fig/fig_length_timeplot_", prefix[[1]], ".pdf"),
+        width = 9, height = 4
+      )
+    } else {
+      time_plot
+    }
+  }
+```
+
+We walk through the measurement prefixes to plot each of them.
+
+```{r plot_time_trends}
+measurement_prefixes |>
+  walk(time_plot_function)
+```
+
+## Plot for main text ##
+
+This code plots the main text figure, which includes the isotope curves.
+
+```{r fig_main_time_plot}
+main_plot_timeplot_prefixes <-
+  list(
+    d13C         = c("d13C", expression(paste("δ"^"13", "C (‰)"))),
+    d18O         = c("d18O", expression(paste("δ"^"18", "O (‰)"))),
+    proloculus   = c("P1", "Proloculus length\n(µm)"),
+    test_radius  = c("Radius", "Radius\n(µm)"),
+    whorl_number = c("WT", "No. of whorls")
+  )
+
+timeser_dat <-
+  full_join(thin_section_data, isotope_data, by = "Age_New") |>
+  pivot_longer(
+    cols = unname(sapply(main_plot_timeplot_prefixes, "[[", 1)),
+    names_to = "variable",
+    values_to = "value"
+  ) |>
+  transmute(
+    Age_New = Age_New,
+    variable = factor(
+      variable,
+      labels = unname(sapply(main_plot_timeplot_prefixes, "[[", 2))
+    ),
+    value = value
+  )
+
+main_timeplot_isotopes <- function(prefix, time_data = timeser_dat) {
+  time_data |>
+    filter(
+      variable == prefix[[2]],
+      !is.na(value)
+    ) |>
+    ggplot(aes(x = Age_New, y = value)) +
+    annotate(
+      "segment",
+      x = 33.9, xend = 33.5, y = -Inf, yend = -Inf,
+      colour = "#444444", lwd = 3, inherit.aes = FALSE
+    ) +
+    annotate(
+      "text",
+      x = 33.5, y = -Inf, label = "EOT",
+      vjust = -0.2, hjust = -0.1, size = 2.5
+    ) +
+    geom_line() +
+    scale_x_reverse(limits = rev(c(33.1, 34.1))) +
+    xlab("Age (Ma)") +
+    ylab(prefix[[2]])
+}
+
+main_timeplot_measurements <- function(prefix, time_data = timeser_dat) {
+  time_data |>
+    filter(
+      variable == prefix[[2]],
+      value > 0
+    ) |>
+    ggplot(aes(x = Age_New, y = value)) +
+    annotate(
+      "segment",
+      x = 33.9, xend = 33.5, y = -Inf, yend = -Inf,
+      colour = "#444444", lwd = 3, inherit.aes = FALSE
+    ) +
+    annotate(
+      "text",
+      x = 33.5, y = -Inf, label = "EOT",
+      vjust = -0.2, hjust = -0.1, size = 2.5
+    ) +
+    geom_point() +
+    scale_x_reverse(limits = rev(c(33.1, 34.1))) +
+    xlab("Age (Ma)") +
+    ylab(prefix[[2]]) +
+    expand_limits(y = 0)
+}
+
+remove_axes <- function(ggplot_list) {
+  ggplot_list +
+    theme(
+      axis.title.y = element_blank(),
+      axis.text.y = element_blank(),
+      axis.ticks.y = element_blank()
+    )
+}
+
+fig_timeplot_isotopes <-
+  main_plot_timeplot_prefixes[1:2] |>
+  map(main_timeplot_isotopes)
+fig_timeplot_measurements <-
+  main_plot_timeplot_prefixes[3:5] |>
+  map(main_timeplot_measurements)
+
+fig_timeplot <-
+  fig_timeplot_isotopes[[1]] +
+  fig_timeplot_isotopes[[2]] +
+  fig_timeplot_measurements[[1]] +
+  fig_timeplot_measurements[[2]] +
+  fig_timeplot_measurements[[3]] +
+  plot_layout(guides = "collect", nrow = 1) +
+  plot_annotation(tag_levels = "A") &
+  coord_flip() &
+  theme_light() &
+  theme(axis.title.x = element_text(size = 9))
+
+fig_timeplot[[2]] <- remove_axes(fig_timeplot[[2]])
+fig_timeplot[[3]] <- remove_axes(fig_timeplot[[3]])
+fig_timeplot[[4]] <- remove_axes(fig_timeplot[[4]])
+fig_timeplot[[5]] <- remove_axes(fig_timeplot[[5]])
+
+ggsave(
+  fig_timeplot,
+  file = "./fig/fig_main_timeseries.pdf",
+  width = 240, height = 120, units = "mm",
+  device = cairo_pdf
+)
+```
+
+
+# Linear models
+
+We use linear models to find the relationships between different measurements in
+each of the tree time bins, and their drivers.
+
+This first chunk is used to specify the measurements we're predicting and
+the predicting values, in this case isotope records.
+
+```{r linear_model_parameters}
+measurements <-
+  c("P1", "WT", "Radius")
+
+predictors <-
+  c("Planktonic_d18O", "Planktonic_d13C")
+```
+
+We check both the individual predictors and together, so the following code
+generates a list of all combinations, then adds an extra null model at the end
+(`y ~ 1`). Doing all these different models is good for testing which predicts
+the data best.
+
+```{r assemble_model_list}
+multi_combn <-
+  function(n, x = predictors) {
+    combn(x, n, simplify = FALSE)
+  }
+
+rhs_models <-
+  map(seq_along(predictors), multi_combn) |>
+  unlist(recursive = FALSE) |>
+  append("1")
+```
+
+All of the workings of the linear models are contained within this function. We
+used generalized least squares (GLS) to estimate the regression coefficients,
+incorporating autocorrelation from the data being in a time series. This is why
+`thin_section_data` is sorted by descending `Age_New` when it's loaded at the
+top of this script.
+
+Not all of the `gls` calls work, mostly because of no samples in that group, so
+I've had to incorporate some error catching with `tryCatch`. Essentially, this
+will output the expected data if it works, and will output a data.frame full of
+NAs if not. Another small hack is including `Planktonic_d18O` for the null model
+(`y ~ 1`) so that there's some data in the subset – this shouldn't affect the
+results.
+
+```{r linear_model_function}
+linear_models <-
+  function(
+    measurement, predictor, series, measurement_data = thin_section_data
+  ) {
+    formula_rhs <- paste(predictor, collapse = " + ")
+    joined_model <- paste(measurement, formula_rhs, sep = " ~ ")
+    subset_measurement_data <-
+      measurement_data |>
+      select(any_of(c(measurement, unlist(predictor), "Series"))) |>
+      filter(Series == series) |>
+      drop_na()
+    tryCatch({
+      gls_object <-
+        gls(
+          as.formula(joined_model),
+          correlation = corARMA(p = 1),
+          control = list(singular.ok = TRUE),
+          data = subset_measurement_data
+        )
+      data.frame(
+        model = joined_model,
+        series = series,
+        parameter = names(gls_object$coefficients),
+        coefficients = unname(gls_object$coefficients),
+        log_likelihood = gls_object$logLik,
+        AIC = AIC(gls_object)
+      )
+    },
+    error = function(e) {
+      data.frame(
+        model = joined_model,
+        series = series,
+        parameter = "(Intercept)",
+        coefficients = NA,
+        log_likelihood = NA,
+        AIC = NA
+      )
+    }
+    )
+  }
+```
+
+This bit of code may take a little time to run. It generates all combinations of
+measurements, predictors, and series then runs the GLS model for each of them
+and outputs a data frame. Each model for each series is in a row and the
+resultant coefficients are in columns (not every row will have every column).
+We also include log-likelihood and AIC values to compare each model.
+
+```{r run_linear_models}
+linear_model_results <-
+  expand_grid(
+    measurement = measurements,
+    predictor = rhs_models,
+    series = series_order
+  ) |>
+  pmap(
+    linear_models,
+    measurement_data = thin_section_data
+  ) |>
+  map_dfr(pivot_wider, names_from = parameter, values_from = coefficients)
+```
+
+The Akaike Information Criterion (AIC) and log-likelihood (logLik) tell us about
+which model fits the data the best: the higher the log-likelihood and lower the
+AIC, the better the model. It's useful to also show the differences from the
+minimum (AIC) or maximum (logLik) values.
+
+```{r min_comparator_values}
+calculate_comparators <-
+  function(.x, linear_models = linear_model_results) {
+    linear_models |>
+      group_by(series) |>
+      filter(
+        str_detect(model, .x)
+      ) |>
+      summarise(
+        measurement = .x,
+        min_AIC = min(AIC, na.rm = TRUE),
+        max_logLik = max(log_likelihood, na.rm = TRUE)
+      )
+  }
+
+min_comparator_values <-
+  measurements |>
+  map_dfr(calculate_comparators) |>
+  rename(strat = series)
+```
+
+The code above gets the minimum values of AIC and logLik for each
+series-measurement combination. Below, these are taken from the individual model
+values. Zero indicates the best model, and the closest values are the next set.
+Finally, the results are written to a CSV file.
+
+```{r difference_comparators}
+add_comparator_columns <-
+  function(
+    strat,
+    measurement,
+    min_AIC,
+    max_logLik,
+    linear_models =
+    linear_model_results
+  ) {
+    linear_models |>
+      dplyr::filter(
+        str_detect(model, measurement) &
+          series == strat
+      ) |>
+      mutate(
+        δAIC = AIC - min_AIC,
+        δlogLik = log_likelihood - max_logLik
+      )
+  }
+
+linear_model_results <-
+  min_comparator_values |>
+  pmap_dfr(add_comparator_columns)
+
+write_csv(
+  linear_model_results,
+  file = "./output/linear_model_results.csv",
+  na = ""
+)
+
+linear_model_results |>
+  mutate(
+    variable = str_split(model, " ~ ", simplify = TRUE),
+    coeffs = variable[, 2],
+    variable = variable[, 1]
+  ) |>
+  pivot_longer(
+    `(Intercept)`:Planktonic_d13C
+  ) |>
+  mutate(
+    coeffs = factor(
+      coeffs,
+      levels = c("1", "Planktonic_d13C", "Planktonic_d18O",
+                 "Planktonic_d18O + Planktonic_d13C"),
+      labels = list(
+        "Intercept",
+        "Planktonic~δ^{13}~C",
+        "Planktonic~δ^{18}~O",
+        "Planktonic~δ^{18}~O~+~δ^{13}~C"
+      )
+    ),
+    name = factor(
+      name,
+      levels = c("(Intercept)", "Planktonic_d13C", "Planktonic_d18O"),
+      labels = list(
+        "Intercept",
+        "Planktonic~δ^{13}~C",
+        "Planktonic~δ^{18}~O"
+      )
+    )
+  ) |>
+  ggplot(aes(
+    x = value,
+    y = series, #reorder(coeffs, -δAIC),
+    colour = name, shape = name
+  )) +
+  geom_vline(aes(xintercept = 0), colour = "#777777") +
+  geom_point() +
+  facet_grid(
+    cols = vars(variable),
+    rows = vars(coeffs),
+    scales = "free",
+    switch = "y", as.table = FALSE,
+    labeller = label_parsed
+  ) +
+  scale_colour_discrete(
+    name = "Driver",
+    labels = parse(text = c("Intercept", "Planktonic~δ^{13}~C",
+                            "Planktonic~δ^{18}~O"))
+  ) +
+  guides(
+    colour = guide_legend(override.aes = list(shape = c(16, 17, 15))),
+    shape = "none"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "top",
+    strip.placement = "outside",
+    strip.text.x.top = element_text(face = "bold"),
+    strip.text.y.left = element_text(angle = 0)
+  ) +
+  labs(
+    x = "Coefficient size",
+    y = NULL,
+    colour = "Driver", shape = "Driver"
+  )
+
+ggsave(
+  "./fig/model_coefficients.pdf",
+  device = cairo_pdf,
+  width = 160, height = 120, units = "mm"
+)
+```
+
+
+# Morphospace
+
+The morphospace plots are generated from principal components analyses (PCA) or
+subsets of the data. This takes four traits then scales and centres them to remove
+the effects of scale.
+
+```{r principal_components}
+morph_data <-
+  thin_section_data |>
+  select(P1, WT, N, Radius)
+
+morph_data_3D <-
+  segmented_data |>
+  mutate(DT = Diameter / Thickness) |>
+  select(VP, V1W, V2W, C1W, C2W, DT, WT3D) # WT3D, Diameter, Thickness, CD)
+
+morph_data_scaled <-
+  scale(morph_data) |>
+  as.data.frame() |>
+  bind_cols(Series = thin_section_data$Series)
+
+morph_data_scaled_3D <-
+  scale(morph_data_3D) |>
+  as.data.frame() |>
+  bind_cols(Series = segmented_data$Series)
+
+pc_data <-
+  princomp(~ P1 + WT + N + Radius, data = morph_data_scaled)
+pc_data$percent_variance <-
+  signif(100 * pc_data$sdev / sum(pc_data$sdev), digits = 3)
+
+pc_data_3D <-
+  princomp(
+    ~ VP + V1W + V2W + C1W + C2W + DT + WT3D,
+    data = morph_data_scaled_3D
+  )
+pc_data_3D$percent_variance <-
+  signif(100 * pc_data_3D$sdev / sum(pc_data_3D$sdev), digits = 3)
+
+pc_data_points <-
+  thin_section_data |>
+  filter(!is.na(P1)) |>
+  select(Series) |>
+  bind_cols(as.data.frame(pc_data$scores))
+
+pc_data_points_3D <-
+  segmented_data |>
+  filter(!is.na(V2W)) |>
+  select(Series) |>
+  bind_cols(as.data.frame(pc_data_3D$scores))
+
+# this is annoyingly complex code to extract the loadings
+pc_loadings <- pc_data$loadings
+class(pc_loadings) <- "matrix"
+pc_loadings <-
+  as.data.frame(pc_loadings) |>
+  rownames_to_column("Variable") |>
+  rename_with(
+    .fn = \(x) paste0(x, " (", pc_data$percent_variance[x], "%)"),
+    .cols = matches("^Comp\\.[2-4]")
+  ) |>
+  pivot_longer(
+    cols = matches("Comp\\.[2-4]"),
+    names_to = "Component",
+    values_to = "values"
+  )
+
+pc_loadings_3D <- pc_data_3D$loadings
+class(pc_loadings_3D) <- "matrix"
+pc_loadings_3D <-
+  as.data.frame(pc_loadings_3D) |>
+  rownames_to_column("Variable") |>
+  rename_with(
+    .fn = \(x) paste0(x, " (", pc_data_3D$percent_variance[x], "%)"),
+    .cols = matches("^Comp\\.[2-4]")
+  ) |>
+  pivot_longer(
+    cols = matches("Comp\\.[2-4]"),
+    names_to = "Component",
+    values_to = "values"
+  )
+```
+
+Plot the results of the PCA. We also include the component loadings from the
+input variables to show contributions to each.
+
+```{r plot_pca}
+pc_2d <-
+  pc_data_points |>
+  rename_with(
+    .fn = \(x) paste0(x, " (", pc_data$percent_variance[x], "%)"),
+    .cols = matches("^Comp\\.[2-4]")
+  ) |>
+  pivot_longer(
+    cols = matches("^Comp\\.[2-4]"),
+    names_to = "Component",
+    values_to = "values"
+  ) |>
+  ggplot(aes(x = Comp.1, y = values, colour = Series, fill = Series)) +
+  geom_convexhull(alpha = 0.4) +
+  geom_point() +
+  xlab(paste0("Component 1 (", pc_data$percent_variance[[1]], "%)")) +
+  theme_minimal() +
+  scale_colour_viridis(end = 0.9, discrete = TRUE) +
+  scale_fill_viridis(end = 0.9, discrete = TRUE) +
+  labs(y = NULL) +
+  geom_segment(
+    mapping = aes(x = 0, y = 0, xend = Comp.1 * 2, yend = values * 2),
+    data = pc_loadings,
+    inherit.aes = FALSE
+  ) +
+  geom_text_repel(
+    mapping = aes(x = Comp.1 * 2, y = values * 2, label = Variable),
+    data = pc_loadings, min.segment.length = 100,
+    size = 2.5, fontface = "bold",
+    inherit.aes = FALSE, hjust = -0.2, direction = "y"
+  ) +
+  coord_fixed() +
+  facet_wrap(vars(Component), ncol = 1, strip.position = "left") +
+  theme(
+    strip.placement = "outside"
+  )
+
+pc_3d <-
+  pc_data_points_3D |>
+  rename_with(
+    .fn = \(x) paste0(x, " (", pc_data_3D$percent_variance[x], "%)"),
+    .cols = matches("^Comp\\.[2-4]")
+  ) |>
+  pivot_longer(
+    cols = matches("Comp\\.[2-4]"),
+    names_to = "Component",
+    values_to = "values"
+  ) |>
+  ggplot(aes(x = Comp.1, y = values, colour = Series, fill = Series)) +
+  geom_convexhull(alpha = 0.4) +
+  geom_point() +
+  xlab(paste0("Component 1 (", pc_data_3D$percent_variance[[1]], "%)")) +
+  labs(y = NULL) +
+  theme_minimal() +
+  scale_colour_viridis(end = 0.9, discrete = TRUE) +
+  scale_fill_viridis(end = 0.9, discrete = TRUE) +
+  geom_segment(
+    mapping = aes(x = 0, y = 0, xend = Comp.1 * 2, yend = values * 2),
+    data = pc_loadings_3D,
+    inherit.aes = FALSE
+  ) +
+  geom_text_repel(
+    mapping = aes(x = Comp.1 * 2, y = values * 2, label = Variable),
+    data = pc_loadings_3D,
+    min.segment.length = 100,
+    size = 2.5, fontface = "bold",
+    inherit.aes = FALSE, hjust = -0.2, direction = "y"
+  ) +
+  coord_fixed() +
+  facet_wrap(vars(Component), ncol = 1, strip.position = "left") +
+  theme(
+    strip.placement = "outside"
+  )
+
+pc_2d + pc_3d +
+  plot_layout(guides = "collect") +
+  plot_annotation(tag_levels = "A")
+
+ggsave(
+  file = "./fig/pca_with_components.pdf",
+  width = 160, height = 130, units = "mm"
+)
+```
+
+We used non-parametric multivariate analysis of variance (NPMANOVA) to test the
+separation of the groups using pairwise tests. This involves doing separate
+tests between each combination of Series pairs: Eocene vs EOT, Eocene vs
+Oligocene, EOT vs Oligocene. NPMANOVA uses the points, and the centroid of the
+group, to test whether two groups of points share the same location of their
+centroid. A significant *p*-value indicates that the centroid is in different
+locations between the two groups. There may still be substantial overlap between
+the groups.
+
+The function `vegan::adonis2` uses permutations (by default 999) to calculate a
+*p*-value: the proportion of random permutations that the exceed the statistic
+for the true data gives that value. For example, if the *F*-statistic of the
+data is greater than all 999 of the permutations, the *p*-value is 0.001, if it
+is exceeded by 250 then *p* = 0.25.
+
+```{r npmanova}
+morph_dist <-
+  morph_data_scaled |>
+  dist()
+
+morph_dist_3D <-
+  morph_data_scaled_3D |>
+  dist()
+
+test_combinations <-
+  combn(series_order, 2) |>
+  as.data.frame()
+
+
+npmanova_test <-
+  function(dist_data, series_data) {
+    adonis2(
+      dist_data ~ Series,
+      data = series_data
+    )
+  }
+
+subset_npmanova <-
+  function(
+    combination,
+    dist_data = morph_dist,
+    series_data = morph_data_scaled
+  ) {
+    row_subset <- series_data$Series %in% combination
+    distances <- as.matrix(dist_data)[row_subset, row_subset]
+    series <- series_data[row_subset, ]
+    npmanova <- npmanova_test(distances, series)
+    data.frame(
+      test = paste(combination, collapse = " vs "),
+      R2 = npmanova$R2[1],
+      F = npmanova$F[1],
+      p = npmanova$`Pr(>F)`[1]
+    )
+  }
+
+pairwise_npmanova <-
+  test_combinations |>
+  map_dfr(subset_npmanova)
+write_csv(pairwise_npmanova, file = "./output/pairwise_npmanova.csv")
+
+pairwise_npmanova_3D <-
+  test_combinations |>
+  map_dfr(
+    subset_npmanova,
+    dist_data = morph_dist_3D,
+    series_data = morph_data_scaled_3D
+  )
+write_csv(pairwise_npmanova_3D, file = "./output/pairwise_npmanova_3D.csv")
+```
+
+The results are written out at the end into a CSV file. There are only three
+rows in this case, but these give the values of *R*^2^, *F* statistic, the
+*p*-value.
+
+
+## Disparity
+
+We use sum of variances as a measure of disparity because it is robust to sample sizes.
+
+```{r}
+sov_bootstrap <-
+  function(dat) {
+    d_bootstraps <-
+      map_dfr(seq_len(100), \(x) {
+        dat |>
+          group_by(Series) |>
+          slice_sample(prop = 1, replace = TRUE) |>
+          summarise(across(starts_with("Comp"), var)) |>
+          rowwise() |>
+          summarise(
+            Series,
+            sum_var = sum(c_across(starts_with("Comp")))
+          )
+      })
+    d_mean_sumvar <-
+      d_bootstraps |>
+      group_by(Series) |>
+      summarise(
+        mean_sum_var = mean(sum_var),
+        lo_ci = quantile(sum_var, probs = c(0.025)),
+        hi_ci = quantile(sum_var, probs = c(0.975))
+      )
+    return(
+      list(
+        d_mean_sumvar,
+        d_bootstraps
+      )
+    )
+  }
+
+sum_var_2d <-
+  sov_bootstrap(pc_data_points)
+write_csv(sum_var_2d[[1]], file = "./output/sum_var_2D.csv")
+
+sum_var_3d <-
+  sov_bootstrap(pc_data_points_3D)
+write_csv(sum_var_3d[[1]], file = "./output/sum_var_3D.csv")
+```
+
+We can compare disparity between these groups using *t*-tests.
+
+```{r}
+t_test_pc <-
+  compare_means(
+    sum_var ~ Series,
+    data = sum_var_2d[[2]],
+    method = "t.test",
+    symnum.args = list(
+      cutpoints = c(0, 0.001, 0.01, 0.05, Inf),
+      symbols = c("***", "**", "*", "ns")
+    )
+  )
+write_csv(t_test_pc, file = "./output/t_test_pc_2D.csv")
+
+t_test_pc_3d <-
+  compare_means(
+    sum_var ~ Series,
+    data = sum_var_3d[[2]],
+    method = "t.test",
+    symnum.args = list(
+      cutpoints = c(0, 0.001, 0.01, 0.05, Inf),
+      symbols = c("***", "**", "*", "ns")
+    )
+  )
+write_csv(t_test_pc_3d, file = "./output/t_test_pc_3D.csv")
+```
+
+Add box plots below the PCA plots.
+
+```{r}
+pc_box <-
+  sum_var_2d[[2]] |>
+  ggplot(aes(
+    x = sum_var,
+    y = Series,
+    colour = Series
+  )) +
+  geom_boxplot(show.legend = FALSE) +
+  stat_compare_means(
+    method = "t.test",
+    comparisons = list(
+      c("Oligocene", "EOT"), c("EOT", "Eocene"),
+      c("Oligocene", "Eocene")
+    ),
+    label.x.npc = "left", label.y.npc = "centre",
+    symnum.args = list(
+      cutpoints = c(0, 0.001, 0.01, 0.05, Inf),
+      symbols = c("***", "**", "*", "ns")
+    ),
+    na.rm = TRUE, size = 2.5
+  ) +
+  lims(x = c(0, NA)) +
+  scale_colour_viridis(end = 0.9, discrete = TRUE) +
+  scale_fill_viridis(end = 0.9, discrete = TRUE) +
+  theme_minimal() +
+  labs(
+    x = "Mean sum of variances",
+    y = NULL
+  )
+
+pc_box_3d <-
+  sum_var_3d[[2]] |>
+  ggplot(aes(
+    x = sum_var,
+    y = Series,
+    colour = Series
+  )) +
+  geom_boxplot(show.legend = FALSE) +
+  stat_compare_means(
+    method = "t.test",
+    comparisons = list(
+      c("Oligocene", "EOT"), c("EOT", "Eocene"),
+      c("Oligocene", "Eocene")
+    ),
+    label.x.npc = "left", label.y.npc = "centre",
+    symnum.args = list(
+      cutpoints = c(0, 0.001, 0.01, 0.05, Inf),
+      symbols = c("***", "**", "*", "ns")
+    ),
+    na.rm = TRUE, size = 2.5
+  ) +
+  lims(x = c(0, NA)) +
+  scale_colour_viridis(end = 0.9, discrete = TRUE) +
+  scale_fill_viridis(end = 0.9, discrete = TRUE) +
+  theme_minimal() +
+  labs(
+    x = "Mean sum of variances",
+    y = NULL
+  )
+
+pc_layout <- "
+  AB
+  AB
+  AB
+  CD
+  EE
+"
+
+pc_2d + pc_3d +
+  pc_box + pc_box_3d + guide_area() +
+  plot_layout(design = pc_layout, guides = "collect") +
+  plot_annotation(tag_levels = "A") &
+  theme(legend.position = "bottom")
+
+ggsave(
+  file = "./fig/pca_with_components.pdf",
+  width = 160, height = 240, units = "mm"
+)
+```
