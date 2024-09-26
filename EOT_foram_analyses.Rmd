@@ -10,7 +10,7 @@ KIRAN KOORAPATI, R., MOON, B. C. and COTTON, L. 2024. Morphological trends in re
 This data is available from Zenodo at DOI: [10.5281/zenodo.13623171](https://zenodo.org/doi/10.5281/zenodo.13623171) and should be cited as:
 
 
-KIRAN KOORAPATI, R., MOON, B. C. and COTTON, L. 2024. Data from 'Morphological trends in reticulate _Nummulites_ cross the Eocene-Oligocene transition'. Zenodo1, doi: 10.5281/zenodo.13623171
+KIRAN KOORAPATI, R., MOON, B. C. and COTTON, L. 2024. Data from 'Morphological trends in reticulate _Nummulites_ cross the Eocene-Oligocene transition'. Zenodo, doi: 10.5281/zenodo.13623171
 
 # Make code replicable
 
@@ -522,16 +522,16 @@ main_timeplot_isotopes <- function(prefix, time_data = timeser_dat) {
     ggplot(aes(x = Age_New, y = value)) +
     annotate(
       "segment",
-      x = 33.9, xend = 33.5, y = -Inf, yend = -Inf,
+      x = 34.15, xend = 33.65, y = -Inf, yend = -Inf,
       colour = "#444444", lwd = 3, inherit.aes = FALSE
     ) +
     annotate(
       "text",
-      x = 33.5, y = -Inf, label = "EOT",
+      x = 33.65, y = -Inf, label = "EOT",
       vjust = -0.2, hjust = -0.1, size = 2.5
     ) +
     geom_line() +
-    scale_x_reverse(limits = rev(c(33.1, 34.1))) +
+    scale_x_reverse(limits = rev(c(33.1, 34.3))) +
     xlab("Age (Ma)") +
     ylab(prefix[[2]])
 }
@@ -545,21 +545,22 @@ main_timeplot_measurements <- function(prefix, time_data = timeser_dat) {
     ggplot(aes(x = Age_New, y = value)) +
     annotate(
       "segment",
-      x = 33.9, xend = 33.5, y = -Inf, yend = -Inf,
+      x = 34.15, xend = 33.65, y = -Inf, yend = -Inf,
       colour = "#444444", lwd = 3, inherit.aes = FALSE
     ) +
     annotate(
       "text",
-      x = 33.5, y = -Inf, label = "EOT",
+      x = 33.65, y = -Inf, label = "EOT",
       vjust = -0.2, hjust = -0.1, size = 2.5
     ) +
     geom_point() +
-    scale_x_reverse(limits = rev(c(33.1, 34.1))) +
+    scale_x_reverse(limits = rev(c(33.1, 34.3))) +
     xlab("Age (Ma)") +
     ylab(prefix[[2]]) +
     expand_limits(y = 0)
 }
-
+#96.64 130.35
+#34.15 33.65
 remove_axes <- function(ggplot_list) {
   ggplot_list +
     theme(
@@ -841,7 +842,7 @@ linear_model_results |>
   )
 
 ggsave(
-  "./fig/model_coefficients.pdf",
+  "./fig/fig_model_coefficients.pdf",
   device = cairo_pdf,
   width = 160, height = 120, units = "mm"
 )
