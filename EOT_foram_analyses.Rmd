@@ -559,8 +559,7 @@ main_timeplot_measurements <- function(prefix, time_data = timeser_dat) {
     ylab(prefix[[2]]) +
     expand_limits(y = 0)
 }
-#96.64 130.35
-#34.15 33.65
+
 remove_axes <- function(ggplot_list) {
   ggplot_list +
     theme(
@@ -863,7 +862,7 @@ morph_data <-
 morph_data_3D <-
   segmented_data |>
   mutate(DT = Diameter / Thickness) |>
-  select(VP, V1W, V2W, C1W, C2W, DT, WT3D) # WT3D, Diameter, Thickness, CD)
+  select(VP, V1W, V2W, C1W, C2W, DT, WT3D)
 
 morph_data_scaled <-
   scale(morph_data) |>
